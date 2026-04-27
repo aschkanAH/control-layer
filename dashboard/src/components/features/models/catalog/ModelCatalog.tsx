@@ -57,6 +57,7 @@ import {
 import { Skeleton } from "../../../ui/skeleton";
 import { ApiExamples } from "../../../modals";
 import { CatalogIcon } from "./CatalogIcon";
+import { useIsMobile } from "../../../../hooks/use-mobile";
 import { MobileModelCatalog } from "./MobileModelCatalog";
 import {
   EVERYONE_GROUP_ID,
@@ -730,7 +731,7 @@ function LoadingSkeleton() {
   );
 }
 
-const DesktopModelCatalog: React.FC = () => {
+const DesktopModelCatalog: React.FC<{ isMobile: boolean }> = ({ isMobile }) => {
   const navigate = useNavigate();
   const { hasPermission } = useAuthorization();
   const canManageGroups = hasPermission("manage-groups");
@@ -778,6 +779,10 @@ const DesktopModelCatalog: React.FC = () => {
     search: debouncedSearch || undefined,
     sort: "released_at",
     sort_direction: "desc",
+    // The mobile sibling fetches its own list with different params; gate on
+    // viewport so only the active view triggers a network request rather
+    // than burning two on every page load.
+    enabled: !isMobile,
   });
   const { data: providerDisplayConfigs = [] } = useProviderDisplayConfigs();
 
@@ -990,11 +995,18 @@ const DesktopModelCatalog: React.FC = () => {
   );
 };
 
-export const ModelCatalog: React.FC = () => (
-  <>
-    <MobileModelCatalog />
-    <DesktopModelCatalog />
-  </>
-);
+export const ModelCatalog: React.FC = () => {
+  // Both children mount unconditionally so the layout switch is CSS-only
+  // (preserves SSR/initial-paint, no flicker). The viewport flag is plumbed
+  // through so each child can gate its own data fetches and avoid issuing
+  // two distinct list queries with non-overlapping cache keys.
+  const isMobile = useIsMobile();
+  return (
+    <>
+      <MobileModelCatalog isMobile={isMobile} />
+      <DesktopModelCatalog isMobile={isMobile} />
+    </>
+  );
+};
 
 export default ModelCatalog;

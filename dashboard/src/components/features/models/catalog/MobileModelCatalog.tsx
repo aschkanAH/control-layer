@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Menu,
@@ -726,7 +726,16 @@ function MobileLoadingSkeleton() {
   );
 }
 
-export const MobileModelCatalog: React.FC = () => {
+interface MobileModelCatalogProps {
+  /** True when the viewport is below the md breakpoint. Drives query gating
+   *  so we don't fire a duplicate list request while the desktop view owns
+   *  the fetch (or vice versa). */
+  isMobile: boolean;
+}
+
+export const MobileModelCatalog: React.FC<MobileModelCatalogProps> = ({
+  isMobile,
+}) => {
   const [searchParams, setSearchParams] = useSearchParams();
   const urlState = useMemo(
     () => deserializeUrlState(searchParams),
@@ -807,6 +816,11 @@ export const MobileModelCatalog: React.FC = () => {
     include: "pricing",
     limit: 500,
     group: groupFilter,
+    // Avoid issuing the mobile query (and a duplicate desktop query) when
+    // the desktop view is the one actually rendered. The viewport-only
+    // wrappers (`hidden md:block` / `block md:hidden`) keep both views
+    // mounted, but only the active one should hit the network.
+    enabled: isMobile,
   });
 
   const { data: providerDisplayConfigs = [] } = useProviderDisplayConfigs();
@@ -967,10 +981,38 @@ export const MobileModelCatalog: React.FC = () => {
   }, [filteredFamilies, urlState.sort, urlState.dir]);
 
   // ----- Drawer handling -----
-  const openModel = (id: string) =>
+  // Tracks whether the current topmost history entry is one we pushed to
+  // open the drawer. When that is the case, closing the drawer should pop
+  // history so the user doesn't have to press Back twice (once to no-op
+  // through the close-replace, then once to actually leave the page).
+  const ownsHistoryEntry = useRef(false);
+  const navigate = useNavigate();
+
+  // If the URL drops modelId via any path other than `closeModel` (popstate,
+  // navigation away, etc.) we no longer own a history entry to pop. Keep the
+  // ref in sync with the URL so a stale `true` can't make a future Close
+  // navigate too far back.
+  useEffect(() => {
+    if (!urlState.modelId) ownsHistoryEntry.current = false;
+  }, [urlState.modelId]);
+
+  const openModel = (id: string) => {
+    ownsHistoryEntry.current = true;
     updateUrl((prev) => ({ ...prev, modelId: id }), { mode: "push" });
-  const closeModel = () =>
-    updateUrl((prev) => ({ ...prev, modelId: null }), { mode: "push" });
+  };
+  const closeModel = () => {
+    if (ownsHistoryEntry.current) {
+      // Reverse the push: this both removes modelId AND removes the
+      // intermediate history entry, so a subsequent Back leaves the page
+      // instead of reopening the drawer.
+      ownsHistoryEntry.current = false;
+      navigate(-1);
+      return;
+    }
+    // Drawer was opened by a deep link / external navigation; we don't own
+    // the topmost entry, so just strip modelId in place.
+    updateUrl((prev) => ({ ...prev, modelId: null }), { mode: "replace" });
+  };
   const setActiveVariant = (id: string) =>
     updateUrl((prev) => ({ ...prev, modelId: id }), { mode: "replace" });
 
