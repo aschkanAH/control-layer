@@ -58,10 +58,14 @@ import { Skeleton } from "../../../ui/skeleton";
 import { ApiExamples } from "../../../modals";
 import { CatalogIcon } from "./CatalogIcon";
 import { useIsMobile } from "../../../../hooks/use-mobile";
-import { MobileModelsView } from "../manage/MobileModelsView";
-
-
-const EVERYONE_GROUP_ID = "00000000-0000-0000-0000-000000000000";
+import { MobileModelCatalog } from "./MobileModelCatalog";
+import {
+  EVERYONE_GROUP_ID,
+  formatReleaseDate,
+  getCatalogTabForModel,
+  getCheapestInputPriceValue,
+  getDisplayCapabilities,
+} from "./shared";
 
 const MODEL_PURPOSE_SECTIONS: { type: ModelDisplayCategory; label: string }[] = [
   { type: "generation", label: "Generation" },
@@ -88,62 +92,9 @@ const DEFAULT_SORT_DIRECTIONS: Partial<Record<ModelSortField, SortDirection>> = 
   price_from: "asc",
 };
 
-function formatReleaseDate(dateStr: string): string {
-  const date = new Date(dateStr + "T00:00:00");
-  return date.toLocaleDateString("en-US", { month: "short", year: "numeric" });
-}
-
 function getCheapestInputPrice(tariffs: Model["tariffs"]): string | null {
-  if (!tariffs) return null;
-  const visible = getUserFacingTariffs(tariffs);
-  if (visible.length === 0) return null;
-  let cheapest = Infinity;
-  for (const t of visible) {
-    const price = parseFloat(t.input_price_per_token);
-    if (price < cheapest) cheapest = price;
-  }
-  if (!isFinite(cheapest)) return null;
-  return formatTariffPrice(String(cheapest));
-}
-
-function getCheapestInputPriceValue(tariffs: Model["tariffs"]): number | null {
-  if (!tariffs) return null;
-  const visible = getUserFacingTariffs(tariffs);
-  if (visible.length === 0) return null;
-  let cheapest = Infinity;
-  for (const t of visible) {
-    const price = parseFloat(t.input_price_per_token);
-    if (price < cheapest) cheapest = price;
-  }
-  return Number.isFinite(cheapest) ? cheapest : null;
-}
-
-/** Derive display capabilities from model type + backend capabilities. */
-function getDisplayCapabilities(model: Model): string[] {
-  const caps: string[] = [];
-  // Implicit capability from model type
-  if (model.model_type === "CHAT") caps.push("text");
-  else if (model.model_type === "EMBEDDINGS") caps.push("embeddings");
-  // Explicit capabilities from backend (vision, reasoning, etc.)
-  if (model.capabilities) {
-    for (const c of model.capabilities) {
-      if (c !== "text" && c !== "embeddings" && !caps.includes(c)) {
-        caps.push(c);
-      }
-    }
-  }
-  return caps;
-}
-
-function getCatalogTabForModel(model: Model): ModelDisplayCategory | null {
-  if (model.metadata?.display_category) {
-    return model.metadata.display_category;
-  }
-  if (model.model_type === "EMBEDDINGS") return "embedding";
-  if (model.model_type === "CHAT" || model.model_type === "RERANKER") {
-    return "generation";
-  }
-  return null;
+  const value = getCheapestInputPriceValue(tariffs);
+  return value == null ? null : formatTariffPrice(String(value));
 }
 
 function CapabilityIcons({ capabilities }: { capabilities: string[] }) {
@@ -780,9 +731,8 @@ function LoadingSkeleton() {
   );
 }
 
-export const ModelCatalog: React.FC = () => {
+const DesktopModelCatalog: React.FC<{ isMobile: boolean }> = ({ isMobile }) => {
   const navigate = useNavigate();
-  const isMobile = useIsMobile();
   const { hasPermission } = useAuthorization();
   const canManageGroups = hasPermission("manage-groups");
 
@@ -829,6 +779,10 @@ export const ModelCatalog: React.FC = () => {
     search: debouncedSearch || undefined,
     sort: "released_at",
     sort_direction: "desc",
+    // The mobile sibling fetches its own list with different params; gate on
+    // viewport so only the active view triggers a network request rather
+    // than burning two on every page load.
+    enabled: !isMobile,
   });
   const { data: providerDisplayConfigs = [] } = useProviderDisplayConfigs();
 
@@ -883,15 +837,15 @@ export const ModelCatalog: React.FC = () => {
   const hasAnyFilters = !!debouncedSearch;
 
   return (
-    <div className="p-3 md:p-4">
+    <div className="hidden md:block p-3 md:p-4">
       {/* Header */}
       <div className="mb-3">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <h1 className="text-2xl md:text-3xl font-bold text-doubleword-neutral-900">
             Models
           </h1>
-          <div className={`flex items-center gap-3 ${isMobile ? "w-full justify-center" : ""}`}>
-            {canManageGroups && !isMobile && (
+          <div className="flex items-center gap-3">
+            {canManageGroups && (
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">Group:</span>
                 <Popover>
@@ -985,7 +939,7 @@ export const ModelCatalog: React.FC = () => {
                 </Popover>
               </div>
             )}
-            <div className={`relative ${isMobile ? "w-full" : ""}`}>
+            <div className="relative">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4 z-10 pointer-events-none" />
               <Input
                 type="text"
@@ -1008,12 +962,6 @@ export const ModelCatalog: React.FC = () => {
             ? "No models matching your filters"
             : "No models available"}
         </div>
-      ) : isMobile ? (
-        <MobileModelsView
-          models={data?.data || []}
-          providerConfigMap={providerConfigMap}
-          onNavigate={(id) => navigate(`/models/${id}`)}
-        />
       ) : (
         <div className="space-y-4">
           {sections.map((section) => (
@@ -1044,6 +992,20 @@ export const ModelCatalog: React.FC = () => {
         model={apiExamplesModel}
       />
     </div>
+  );
+};
+
+export const ModelCatalog: React.FC = () => {
+  // Both children mount unconditionally so the layout switch is CSS-only
+  // (preserves SSR/initial-paint, no flicker). The viewport flag is plumbed
+  // through so each child can gate its own data fetches and avoid issuing
+  // two distinct list queries with non-overlapping cache keys.
+  const isMobile = useIsMobile();
+  return (
+    <>
+      <MobileModelCatalog isMobile={isMobile} />
+      <DesktopModelCatalog isMobile={isMobile} />
+    </>
   );
 };
 
