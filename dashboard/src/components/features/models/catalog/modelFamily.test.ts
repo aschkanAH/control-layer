@@ -100,9 +100,22 @@ describe("aggregateFamilies", () => {
 
 describe("computeNewCutoff", () => {
   it("subtracts the requested number of months", () => {
-    expect(computeNewCutoff(new Date("2026-04-15T00:00:00Z"), 3)).toBe(
-      "2026-01-15",
-    );
+    expect(computeNewCutoff(new Date(2026, 3, 15), 3)).toBe("2026-01-15");
+  });
+
+  it("clamps to the last day of the target month when the source day overflows", () => {
+    // May has 31 days, February doesn't. Naive setMonth(getMonth() - 3) on
+    // May 31 produces "Feb 31" → JS normalises to early March, pushing the
+    // cutoff days forward. The clamped impl must stay in February.
+    expect(computeNewCutoff(new Date(2026, 4, 31), 3)).toBe("2026-02-28");
+    // Leap year: target Feb has 29 days.
+    expect(computeNewCutoff(new Date(2024, 4, 31), 3)).toBe("2024-02-29");
+    // March 31 → Nov 30 of previous year (Nov has 30 days).
+    expect(computeNewCutoff(new Date(2026, 2, 31), 4)).toBe("2025-11-30");
+  });
+
+  it("crosses year boundaries correctly", () => {
+    expect(computeNewCutoff(new Date(2026, 0, 15), 3)).toBe("2025-10-15");
   });
 });
 

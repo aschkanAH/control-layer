@@ -59,6 +59,7 @@ import {
   formatReleaseDate,
   getCheapestInputPriceValue,
   getDisplayCapabilities,
+  type PricingContext,
 } from "./shared";
 import {
   aggregateFamilies,
@@ -79,7 +80,6 @@ import {
 } from "./mobileUrlState";
 
 const PRICING_CONTEXT_KEY = "catalog-pricing-context";
-type PricingContext = "async" | "batch";
 
 const CATEGORY_TABS: { value: CatalogCategory; label: string }[] = [
   { value: "all", label: "All" },

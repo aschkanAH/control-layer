@@ -163,11 +163,24 @@ export function aggregateFamilies(
 /**
  * Compute the ISO date (YYYY-MM-DD) used as the "new" cutoff, given a number
  * of months back from `now`. Pure function for testability.
+ *
+ * Implementation note: a naive `setMonth(getMonth() - months)` overflows
+ * silently when the source day exceeds the target month's length (e.g.
+ * May 31 → "Feb 31" → Mar 3, three days later than intended), pushing the
+ * cutoff forward and incorrectly demoting borderline-new models. We clamp
+ * the day to the last day of the target month to avoid that wrap-around.
  */
 export function computeNewCutoff(now: Date, months: number): string {
-  const cutoff = new Date(now);
-  cutoff.setMonth(cutoff.getMonth() - months);
-  return cutoff.toISOString().slice(0, 10);
+  const year = now.getFullYear();
+  const monthIdx = now.getMonth() - months;
+  // Day 0 of (target+1) is the last day of the target month — used to clamp.
+  const lastDayOfTargetMonth = new Date(year, monthIdx + 1, 0).getDate();
+  const day = Math.min(now.getDate(), lastDayOfTargetMonth);
+  const cutoff = new Date(year, monthIdx, day);
+  const isoYear = String(cutoff.getFullYear()).padStart(4, "0");
+  const isoMonth = String(cutoff.getMonth() + 1).padStart(2, "0");
+  const isoDay = String(cutoff.getDate()).padStart(2, "0");
+  return `${isoYear}-${isoMonth}-${isoDay}`;
 }
 
 /**
