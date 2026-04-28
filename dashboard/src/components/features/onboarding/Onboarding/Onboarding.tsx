@@ -54,30 +54,64 @@ type ExecutionMode = "browser" | "cli";
 type Language = "python" | "curl";
 type RunState = "idle" | "running" | "success";
 
+// Builds the inner JSON body shared by both the single-row async payload
+// and each row of the JSONL batch payload. Model aliases are user-controlled
+// (catalog metadata) and may legitimately contain ", \, or control chars,
+// so we never interpolate them into JSON via template literals.
+function buildChatBody(modelAlias: string) {
+  return {
+    model: modelAlias,
+    messages: [
+      { role: "system", content: "Output only valid JSON." },
+      {
+        role: "user",
+        content:
+          "Generate a synthetic patient profile (Age, Gender, Symptoms, Diagnosis).",
+      },
+    ],
+  };
+}
+
+function buildAsyncPayloadObject(modelAlias: string) {
+  return { ...buildChatBody(modelAlias), tier: "async" };
+}
+
 function buildAsyncPayload(modelAlias: string): string {
-  return `{
-  "model": "${modelAlias}",
-  "messages": [
-    {"role": "system", "content": "Output only valid JSON."},
-    {"role": "user", "content": "Generate a synthetic patient profile (Age, Gender, Symptoms, Diagnosis)."}
-  ],
-  "tier": "async"
-}`;
+  return JSON.stringify(buildAsyncPayloadObject(modelAlias), null, 2);
 }
 
 function buildJsonlPayload(modelAlias: string): string {
-  const row = (id: string) =>
-    `{"custom_id": "${id}", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "${modelAlias}", "messages": [{"role": "system", "content": "Output only valid JSON."}, {"role": "user", "content": "Generate a synthetic patient profile (Age, Gender, Symptoms, Diagnosis)."}]}}`;
-  return [row("row-1"), row("row-2"), row("row-3")].join("\n");
+  return ["row-1", "row-2", "row-3"]
+    .map((id) =>
+      JSON.stringify({
+        custom_id: id,
+        method: "POST",
+        url: "/v1/chat/completions",
+        body: buildChatBody(modelAlias),
+      }),
+    )
+    .join("\n");
+}
+
+// Returns the alias formatted as an inner-string literal (no surrounding
+// quotes), correctly escaping any chars that would break Python/cURL string
+// literals or the embedded JSON in the cURL example. JS string literal
+// escapes are a strict subset of Python's, so reusing the JSON encoding is
+// safe for all three target languages.
+function escapeForLiteral(value: string): string {
+  const json = JSON.stringify(value);
+  return json.slice(1, json.length - 1);
 }
 
 function buildSnippets(apiKey: string, modelAlias: string) {
+  const safeKey = escapeForLiteral(apiKey);
+  const safeAlias = escapeForLiteral(modelAlias);
   return {
     batch: {
       python: `from openai import OpenAI
 
 client = OpenAI(
-    api_key="${apiKey}",
+    api_key="${safeKey}",
     base_url="https://api.doubleword.ai/v1"
 )
 
@@ -96,10 +130,10 @@ batch = client.batches.create(
 
 print(f"Batch started: {batch.id}")`,
       curl: `curl -X POST https://api.doubleword.ai/v1/batches \\
-  -H "Authorization: Bearer ${apiKey}" \\
+  -H "Authorization: Bearer ${safeKey}" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model": "${modelAlias}",
+    "model": "${safeAlias}",
     "priority": "standard",
     "requests": [
       {
@@ -107,7 +141,7 @@ print(f"Batch started: {batch.id}")`,
         "method": "POST",
         "url": "/v1/chat/completions",
         "body": {
-            "model": "${modelAlias}",
+            "model": "${safeAlias}",
             "messages": [{"role": "user", "content": "Generate a synthetic patient profile."}]
         }
       }
@@ -118,13 +152,13 @@ print(f"Batch started: {batch.id}")`,
       python: `from openai import OpenAI
 
 client = OpenAI(
-    api_key="${apiKey}",
+    api_key="${safeKey}",
     base_url="https://api.doubleword.ai/v1"
 )
 
 # Start an async job (~25% savings, minutes completion)
 response = client.chat.completions.create(
-    model="${modelAlias}",
+    model="${safeAlias}",
     messages=[
         {"role": "user", "content": "Generate a synthetic patient profile."}
     ],
@@ -133,11 +167,11 @@ response = client.chat.completions.create(
 
 print(f"Async job queued!")`,
       curl: `curl -X POST https://api.doubleword.ai/v1/chat/completions \\
-  -H "Authorization: Bearer ${apiKey}" \\
+  -H "Authorization: Bearer ${safeKey}" \\
   -H "Content-Type: application/json" \\
   -H "x-doubleword-tier: async" \\
   -d '{
-    "model": "${modelAlias}",
+    "model": "${safeAlias}",
     "messages": [{"role": "user", "content": "Generate a synthetic patient profile."}]
   }'`,
     },
@@ -317,6 +351,11 @@ export function Onboarding() {
     // responds.
     void (async () => {
       try {
+        // Always build the JSONL via the object helpers so we never round-
+        // trip through JSON.parse — model aliases can contain quotes/
+        // backslashes that would have made the previous template-string
+        // payload invalid JSON and thrown here, while the simulated timer
+        // still flipped the UI to "success".
         const payload =
           workloadType === "batch"
             ? buildJsonlPayload(modelAlias)
@@ -324,7 +363,7 @@ export function Onboarding() {
                 custom_id: "row-1",
                 method: "POST",
                 url: "/v1/chat/completions",
-                body: JSON.parse(buildAsyncPayload(modelAlias)),
+                body: buildAsyncPayloadObject(modelAlias),
               })}\n`;
         const blob = new Blob([payload], { type: "application/jsonl" });
         const file = new File(
@@ -732,7 +771,7 @@ export function Onboarding() {
                       }`}
                       aria-label={
                         listenerState === "waiting"
-                          ? "Simulate request received"
+                          ? "Mark request received"
                           : "Request received"
                       }
                     >
@@ -756,7 +795,7 @@ export function Onboarding() {
                         </div>
                         {listenerState === "waiting" && (
                           <span className="hidden text-xs text-amber-600/60 sm:inline">
-                            (Click to simulate success)
+                            (Click to continue)
                           </span>
                         )}
                       </div>
