@@ -43,10 +43,13 @@ export function RegisterForm() {
         password,
         displayName: undefined, // Let user set this later
       });
+      // Post-signup we want users to land on the zero-friction onboarding
+      // page where they get a live API key, run their first workload, and
+      // (optionally) invite teammates. An explicit ?redirect= takes priority
+      // (e.g. org invite acceptance flows), as does the server-driven
+      // onboarding_redirect_url which AuthProvider applies on initial load.
       const redirect = searchParams.get("redirect");
-      if (redirect) {
-        navigate(redirect);
-      }
+      navigate(redirect || "/onboarding");
       toast.success("Registration successful!");
     } catch (error) {
       toast.error(

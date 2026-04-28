@@ -183,6 +183,11 @@ const Connections = lazyWithRetry(() =>
     default: m.Connections,
   })),
 );
+const Onboarding = lazyWithRetry(() =>
+  import("./components/features/onboarding").then((m) => ({
+    default: m.Onboarding,
+  })),
+);
 
 // Loading component for lazy-loaded routes
 function RouteLoader() {
@@ -651,6 +656,18 @@ function AppRoutes() {
                 </Suspense>
               </ProtectedRoute>
             </AppLayout>
+          }
+        />
+        {/* Onboarding renders its own slim header inside the sidebar shell,
+            so it deliberately does NOT wrap with AppLayout. */}
+        <Route
+          path="/onboarding"
+          element={
+            <ProtectedRoute path="/onboarding">
+              <Suspense fallback={<RouteLoader />}>
+                <Onboarding />
+              </Suspense>
+            </ProtectedRoute>
           }
         />
       </Routes>

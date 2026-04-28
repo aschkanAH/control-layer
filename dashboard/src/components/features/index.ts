@@ -2,6 +2,7 @@ export * from "./api-keys";
 export * from "./cost-management";
 export * from "./endpoints";
 export * from "./models";
+export * from "./onboarding";
 export * from "./playground";
 export * from "./profile";
 export * from "./requests";
