@@ -31,10 +31,13 @@ import {
 import { copyToClipboard as copyToClipboardUtil } from "@/utils/clipboard";
 import { AppSidebar } from "../../../layout/Sidebar/AppSidebar";
 
-// Webhook configured by Growth team for capturing teammate invites. Posting
-// here is best-effort (no-cors) so we can't read the response.
-const INVITE_WEBHOOK_URL =
-  "https://hooks.zapier.com/hooks/catch/27180094/uvhcpf2/";
+// Webhook used by the "invite a teammate" form. Configured per-environment
+// via VITE_INVITE_WEBHOOK_URL (typically a Zapier Catch Hook). Posting here
+// is best-effort under `no-cors`, so the host does not need CORS headers
+// configured and we can't read the response. If the env var is unset the
+// invite form is hidden — we'd rather not silently drop submissions.
+const INVITE_WEBHOOK_URL: string | undefined =
+  import.meta.env.VITE_INVITE_WEBHOOK_URL;
 
 // Default catalog model used in the visible code samples. We swap this with the
 // first available chat model alias from the user's catalog when one is found,
@@ -348,6 +351,12 @@ export function Onboarding() {
   const handleSendInvite = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inviteEmail.trim() || inviteSubmitting) return;
+    if (!INVITE_WEBHOOK_URL) {
+      // Defensive — the form is hidden when the env var is unset, but
+      // a stale build could still hit this path.
+      toast.error("Invites are not configured for this environment.");
+      return;
+    }
     setInviteSubmitting(true);
     try {
       // The Zapier hook host doesn't return CORS headers so we have to
@@ -756,7 +765,10 @@ export function Onboarding() {
                 )}
               </section>
 
-              {/* Step 3 — Team invite */}
+              {/* Step 3 — Team invite. Rendered only when the webhook is
+                  configured; otherwise we'd be collecting invite emails
+                  with nowhere to send them. */}
+              {INVITE_WEBHOOK_URL && (
               <section className="relative flex flex-col items-center gap-8 overflow-hidden rounded-xl border border-zinc-800 bg-gradient-to-br from-[#1c1c1a] to-zinc-900 p-8 text-white shadow-xl md:flex-row">
                 <div
                   className="pointer-events-none absolute -mr-20 -mt-20 right-0 top-0 h-64 w-64 rounded-full bg-doubleword-primary/10 blur-3xl"
@@ -801,6 +813,7 @@ export function Onboarding() {
                   </form>
                 </div>
               </section>
+              )}
             </div>
           </main>
         </SidebarInset>
