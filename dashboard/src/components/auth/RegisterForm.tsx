@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useSearchParams, useNavigate } from "react-router-dom";
 import { Eye, EyeOff } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
@@ -13,6 +14,8 @@ import {
   CardTitle,
 } from "../ui/card";
 import { useAuth } from "../../contexts/auth";
+import { queryKeys } from "../../api/control-layer/keys";
+import type { UserResponse } from "../../api/control-layer/types";
 import { toast } from "sonner";
 
 export function RegisterForm() {
@@ -24,6 +27,7 @@ export function RegisterForm() {
   const { register } = useAuth();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -43,9 +47,26 @@ export function RegisterForm() {
         password,
         displayName: undefined, // Let user set this later
       });
+      // Post-signup landing logic, ordered by priority:
+      //
+      // 1. Explicit ?redirect= (e.g. org invite acceptance) — always wins.
+      // 2. Server-driven onboarding_redirect_url — AuthProvider triggers a
+      //    hard navigation via window.location.href as part of register()'s
+      //    checkAuthStatus() call. We must NOT call navigate() in that case
+      //    or we race the pending hard navigation, briefly mounting the
+      //    wrong route. We detect this by reading the just-populated user
+      //    cache entry that AuthProvider writes before deciding to redirect.
+      // 3. Otherwise, default to /onboarding for the zero-friction flow.
       const redirect = searchParams.get("redirect");
       if (redirect) {
         navigate(redirect);
+      } else {
+        const currentUser = queryClient.getQueryData<UserResponse>(
+          queryKeys.users.byId("current", "organizations"),
+        );
+        if (!currentUser?.onboarding_redirect_url) {
+          navigate("/onboarding");
+        }
       }
       toast.success("Registration successful!");
     } catch (error) {
