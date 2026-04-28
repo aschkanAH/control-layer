@@ -350,19 +350,27 @@ export function Onboarding() {
     if (!inviteEmail.trim() || inviteSubmitting) return;
     setInviteSubmitting(true);
     try {
-      // Zapier hooks accept a basic POST. We use no-cors because the hook
-      // host doesn't return CORS headers, which means we can't read the
-      // response — that's fine, we trust the network call.
+      // The Zapier hook host doesn't return CORS headers so we have to
+      // POST in `no-cors` mode. That mode forbids non-safelisted
+      // Content-Types: setting `application/json` would be silently
+      // downgraded to `text/plain;charset=UTF-8`, which Zapier Catch Hooks
+      // do NOT auto-parse into fields — the Zap would still fire but
+      // `email`/`inviter_email`/etc. would all be empty.
+      //
+      // Using URLSearchParams produces an `application/x-www-form-urlencoded`
+      // body, which IS CORS-safelisted and IS parsed into structured fields
+      // by Zapier. We can't read the response either way (opaque), so the
+      // success toast is best-effort by design.
+      const params = new URLSearchParams();
+      params.set("email", inviteEmail.trim());
+      if (currentUser?.email) params.set("inviter_email", currentUser.email);
+      if (currentUser?.id) params.set("inviter_id", currentUser.id);
+      params.set("source", "onboarding");
+
       await fetch(INVITE_WEBHOOK_URL, {
         method: "POST",
         mode: "no-cors",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: inviteEmail.trim(),
-          inviter_email: currentUser?.email,
-          inviter_id: currentUser?.id,
-          source: "onboarding",
-        }),
+        body: params,
       });
       setInviteSent(true);
       setInviteEmail("");
