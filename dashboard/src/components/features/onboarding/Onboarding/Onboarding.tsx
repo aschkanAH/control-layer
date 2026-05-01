@@ -460,11 +460,11 @@ export function Onboarding() {
             <div className="mx-auto w-full max-w-3xl px-6 pt-12 md:pt-16">
               <div className="mb-10 text-center">
                 <h1 className="text-3xl font-bold tracking-tight text-doubleword-text-primary mb-3">
-                  You&apos;re ready to run at scale.
+                  From zero to inference in seconds.
                 </h1>
                 <p className="mx-auto max-w-xl text-lg text-doubleword-text-tertiary">
-                  Your workspace is provisioned. Send your first API request
-                  below to authenticate your setup.
+                  Your workspace is fully provisioned. Run a sample payload
+                  right from your browser to see Doubleword in action.
                 </p>
               </div>
 
