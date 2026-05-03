@@ -39,11 +39,13 @@ import { AppSidebar } from "../../../layout/Sidebar/AppSidebar";
 const INVITE_WEBHOOK_URL: string | undefined =
   import.meta.env.VITE_INVITE_WEBHOOK_URL;
 
-// Default catalog model used in the visible code samples. We swap this with the
-// first available chat model alias from the user's catalog when one is found,
-// but keep medgemma-4b as a fallback so the snippet always renders something
-// concrete even before /models loads.
-const FALLBACK_MODEL_ALIAS = "medgemma-4b";
+// Placeholder alias used purely for rendering the code samples while the
+// catalog query is in flight or empty. We deliberately do NOT use this for
+// outbound API calls — the user almost certainly isn't entitled to it on
+// every deployment, so firing real requests against it produces 4xx errors
+// (see "Model 'medgemma-4b' has not been configured…"). Real requests are
+// gated on a catalog-resolved alias (see `runnableModelAlias` below).
+const FALLBACK_DISPLAY_MODEL_ALIAS = "medgemma-4b";
 
 const SUCCESS_REDIRECT_DELAY_MS = 2000;
 const RUN_NOW_SIMULATED_DELAY_MS = 2500;
@@ -209,16 +211,31 @@ export function Onboarding() {
   const uploadFile = useUploadFileWithProgress();
 
   // Pull the first chat model alias from the catalog so the rendered code
-  // samples reference something that will actually work for the user. Falls
-  // back to a hard-coded alias when the catalog query is still loading or
-  // empty.
-  const { data: modelsData } = useModels({ accessible: true, limit: 50 });
-  const modelAlias = useMemo(() => {
+  // samples reference something that will actually work for the user.
+  //
+  // We expose two values intentionally:
+  //   - runnableModelAlias: undefined while the catalog is still loading and
+  //     when the user has no accessible chat model. Used for outbound
+  //     requests (background batch, Run Now) so we never fire batches against
+  //     a hard-coded model the user isn't entitled to. The earlier behaviour
+  //     of falling back to "medgemma-4b" silently caused a divergence between
+  //     the rendered payload (e.g. "deepseek") and the model actually sent to
+  //     the backend, producing "Model 'medgemma-4b' has not been configured"
+  //     errors in environments where that model isn't available.
+  //   - displayModelAlias: always resolved (real alias when available, hard-
+  //     coded placeholder otherwise) so the rendered code samples are never
+  //     blank.
+  const { data: modelsData, isLoading: modelsLoading } = useModels({
+    accessible: true,
+    limit: 50,
+  });
+  const runnableModelAlias = useMemo<string | undefined>(() => {
     const chat = modelsData?.data?.find(
       (m) => (m.model_type ?? "CHAT") === "CHAT",
     );
-    return chat?.alias ?? FALLBACK_MODEL_ALIAS;
+    return chat?.alias;
   }, [modelsData]);
+  const displayModelAlias = runnableModelAlias ?? FALLBACK_DISPLAY_MODEL_ALIAS;
 
   // Mint a live API key on mount so step 1 has something concrete to show.
   // We only do this once per visit and only when the user is authenticated.
@@ -250,14 +267,21 @@ export function Onboarding() {
       });
   }, [authLoading, isAuthenticated, currentUser, createApiKey]);
 
-  // Fire the "Hello World" sample batch in the background on mount. This is
-  // best-effort: if the catalog has no chat model or the upload fails, we
-  // swallow the error and just hide the toast. The toast is shown
-  // optimistically so the user sees activity even if the model catalog is
-  // slow to load.
+  // Fire the "Hello World" sample batch in the background once we know which
+  // model to send it to. We deliberately wait for the catalog query so the
+  // outbound payload uses the same alias the visible code samples render
+  // (otherwise the user sees e.g. `deepseek` in the UI but the backend
+  // receives `medgemma-4b`). If the catalog has no accessible chat model we
+  // skip the background batch and the toast entirely — there's no plausible
+  // model to demo with, and a doomed POST would just spam the console.
   useEffect(() => {
     if (sampleBatchRequestedRef.current) return;
     if (authLoading || !isAuthenticated) return;
+    if (modelsLoading) return;
+    if (!runnableModelAlias) {
+      sampleBatchRequestedRef.current = true;
+      return;
+    }
     sampleBatchRequestedRef.current = true;
 
     toast("Sample Batch Started", {
@@ -267,12 +291,19 @@ export function Onboarding() {
       icon: <Sparkles className="w-4 h-4 text-doubleword-primary" />,
     });
 
+    const aliasForRequest = runnableModelAlias;
     void (async () => {
       try {
-        // Wait one tick for the models query to resolve. If it hasn't, the
-        // fallback alias is fine — the batch creation will just fail silently
-        // server-side which is acceptable for this background "demo" job.
-        const helloPayload = `{"custom_id": "hello-1", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "${modelAlias}", "messages": [{"role": "user", "content": "Say hello."}]}}\n`;
+        const helloRow = {
+          custom_id: "hello-1",
+          method: "POST",
+          url: "/v1/chat/completions",
+          body: {
+            model: aliasForRequest,
+            messages: [{ role: "user", content: "Say hello." }],
+          },
+        };
+        const helloPayload = `${JSON.stringify(helloRow)}\n`;
         const blob = new Blob([helloPayload], { type: "application/jsonl" });
         const file = new File([blob], `onboarding-hello-${Date.now()}.jsonl`, {
           type: "application/jsonl",
@@ -292,10 +323,12 @@ export function Onboarding() {
         console.warn("Background Hello World batch failed:", err);
       }
     })();
-    // We intentionally only run this once after auth is resolved; modelAlias
-    // is read inside the IIFE so we don't need it as a dep.
+    // The other deps are mutation handles that are stable across renders;
+    // re-running the effect when their identities churn would re-fire the
+    // batch on every render. The idempotency ref above is the single source
+    // of truth.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading, isAuthenticated]);
+  }, [authLoading, isAuthenticated, modelsLoading, runnableModelAlias]);
 
   const goToDashboard = useCallback(() => {
     navigate("/models");
@@ -311,15 +344,18 @@ export function Onboarding() {
     return () => clearTimeout(timer);
   }, [runState, listenerState, goToDashboard]);
 
+  // Visible code samples always render against the display alias so the UI
+  // is never blank; outbound requests use runnableModelAlias and bail out
+  // when undefined.
   const snippets = useMemo(
-    () => buildSnippets(apiKey ?? "<your-api-key>", modelAlias),
-    [apiKey, modelAlias],
+    () => buildSnippets(apiKey ?? "<your-api-key>", displayModelAlias),
+    [apiKey, displayModelAlias],
   );
 
   const browserPayload =
     workloadType === "batch"
-      ? buildJsonlPayload(modelAlias)
-      : buildAsyncPayload(modelAlias);
+      ? buildJsonlPayload(displayModelAlias)
+      : buildAsyncPayload(displayModelAlias);
   const cliSnippet = snippets[workloadType][language];
 
   const handleCopyKey = async () => {
@@ -348,7 +384,15 @@ export function Onboarding() {
     // success/failure to the run state machine since the spec asks for a
     // simulated 2.5s "running" → "success" cycle that gives the user a
     // predictable redirect experience, regardless of how fast the API
-    // responds.
+    // responds. If we have no catalog-resolved alias we skip the network
+    // call entirely rather than firing against the placeholder display
+    // alias (which the user is unlikely to be entitled to).
+    const aliasForRequest = runnableModelAlias;
+    if (!aliasForRequest) {
+      setTimeout(() => setRunState("success"), RUN_NOW_SIMULATED_DELAY_MS);
+      return;
+    }
+
     void (async () => {
       try {
         // Always build the JSONL via the object helpers so we never round-
@@ -358,12 +402,12 @@ export function Onboarding() {
         // still flipped the UI to "success".
         const payload =
           workloadType === "batch"
-            ? buildJsonlPayload(modelAlias)
+            ? buildJsonlPayload(aliasForRequest)
             : `${JSON.stringify({
                 custom_id: "row-1",
                 method: "POST",
                 url: "/v1/chat/completions",
-                body: buildAsyncPayloadObject(modelAlias),
+                body: buildAsyncPayloadObject(aliasForRequest),
               })}\n`;
         const blob = new Blob([payload], { type: "application/jsonl" });
         const file = new File(
