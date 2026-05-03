@@ -29,6 +29,7 @@ import {
   useUser,
 } from "@/api/control-layer/hooks";
 import { copyToClipboard as copyToClipboardUtil } from "@/utils/clipboard";
+import { useAuthorization } from "@/utils/authorization";
 import { AppSidebar } from "../../../layout/Sidebar/AppSidebar";
 
 // Webhook used by the "invite a teammate" form. Configured per-environment
@@ -184,6 +185,7 @@ export function Onboarding() {
   const navigate = useNavigate();
   const { isAuthenticated, isLoading: authLoading } = useAuth();
   const { data: currentUser } = useUser("current");
+  const { canAccessRoute } = useAuthorization();
 
   const [apiKey, setApiKey] = useState<string | null>(null);
   const [apiKeyError, setApiKeyError] = useState<string | null>(null);
@@ -323,19 +325,40 @@ export function Onboarding() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, isAuthenticated, modelsLoading, runnableModelAlias]);
 
+  // "Skip to Dashboard" header button always lands on /models per the spec.
   const goToDashboard = useCallback(() => {
     navigate("/models");
   }, [navigate]);
 
-  // Auto-redirect after success in both browser and CLI modes.
+  // Where to land the user after they successfully run a workload from the
+  // browser tab. We send them to the route that will show the job they just
+  // queued (/async for async tier, /batches for batch tier) so they see
+  // their output instead of a generic models list.
+  //
+  // Both routes share the `batches` permission and are config-gated by
+  // `batches.enabled` / `batches.async_requests.enabled`. If the resolved
+  // route isn't accessible on this deployment we fall back to /models so
+  // ProtectedRoute doesn't bounce the user mid-redirect.
+  const browserSuccessRoute = useMemo(() => {
+    const preferred = workloadType === "batch" ? "/batches" : "/async";
+    return canAccessRoute(preferred) ? preferred : "/models";
+  }, [workloadType, canAccessRoute]);
+
+  // Auto-redirect after success in both browser and CLI modes. The CLI
+  // listener path doesn't run an actual workload (it's a "click to
+  // continue" simulation), so we keep that path on /models — there's no
+  // job for the user to view. The browser run-now path goes to the
+  // job-specific route.
   useEffect(() => {
     const succeeded =
       runState === "success" || listenerState === "success";
     if (!succeeded || redirectScheduledRef.current) return;
     redirectScheduledRef.current = true;
-    const timer = setTimeout(goToDashboard, SUCCESS_REDIRECT_DELAY_MS);
+    const destination =
+      runState === "success" ? browserSuccessRoute : "/models";
+    const timer = setTimeout(() => navigate(destination), SUCCESS_REDIRECT_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [runState, listenerState, goToDashboard]);
+  }, [runState, listenerState, browserSuccessRoute, navigate]);
 
   // Visible code samples always render against the display alias so the UI
   // is never blank; outbound requests use runnableModelAlias and bail out
@@ -742,8 +765,11 @@ export function Onboarding() {
                       <div className="flex items-center justify-between p-4">
                         <span className="flex items-center gap-2 text-sm font-medium text-emerald-800">
                           <Sparkles className="h-4 w-4" />
-                          Workload successfully received! Redirecting to
-                          dashboard…
+                          {browserSuccessRoute === "/batches"
+                            ? "Workload successfully received! Taking you to your batch…"
+                            : browserSuccessRoute === "/async"
+                              ? "Workload successfully received! Taking you to your async request…"
+                              : "Workload successfully received! Redirecting to dashboard…"}
                         </span>
                       </div>
                     </div>
