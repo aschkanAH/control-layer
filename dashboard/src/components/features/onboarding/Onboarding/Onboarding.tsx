@@ -39,13 +39,13 @@ import { AppSidebar } from "../../../layout/Sidebar/AppSidebar";
 const INVITE_WEBHOOK_URL: string | undefined =
   import.meta.env.VITE_INVITE_WEBHOOK_URL;
 
-// Placeholder alias used purely for rendering the code samples while the
-// catalog query is in flight or empty. We deliberately do NOT use this for
-// outbound API calls — the user almost certainly isn't entitled to it on
-// every deployment, so firing real requests against it produces 4xx errors
-// (see "Model 'medgemma-4b' has not been configured…"). Real requests are
-// gated on a catalog-resolved alias (see `runnableModelAlias` below).
-const FALLBACK_DISPLAY_MODEL_ALIAS = "medgemma-4b";
+// Placeholder shown in the rendered code samples ONLY while the catalog
+// query is in flight or empty. Deliberately not a real model alias so it
+// can't be mistaken for one and so the visible payload never references a
+// model the user might or might not be entitled to. Outbound requests are
+// blocked entirely until a real catalog-resolved alias is available — see
+// `runnableModelAlias` and the disabled state on the Run Now button.
+const PLACEHOLDER_MODEL_ALIAS = "<your-model-alias>";
 
 const SUCCESS_REDIRECT_DELAY_MS = 2000;
 const RUN_NOW_SIMULATED_DELAY_MS = 2500;
@@ -210,21 +210,11 @@ export function Onboarding() {
   const createBatch = useCreateBatch();
   const uploadFile = useUploadFileWithProgress();
 
-  // Pull the first chat model alias from the catalog so the rendered code
-  // samples reference something that will actually work for the user.
-  //
-  // We expose two values intentionally:
-  //   - runnableModelAlias: undefined while the catalog is still loading and
-  //     when the user has no accessible chat model. Used for outbound
-  //     requests (background batch, Run Now) so we never fire batches against
-  //     a hard-coded model the user isn't entitled to. The earlier behaviour
-  //     of falling back to "medgemma-4b" silently caused a divergence between
-  //     the rendered payload (e.g. "deepseek") and the model actually sent to
-  //     the backend, producing "Model 'medgemma-4b' has not been configured"
-  //     errors in environments where that model isn't available.
-  //   - displayModelAlias: always resolved (real alias when available, hard-
-  //     coded placeholder otherwise) so the rendered code samples are never
-  //     blank.
+  // Pull the first accessible chat model alias from the catalog. Outbound
+  // requests are gated on this resolving to a concrete value; the rendered
+  // payload uses an obviously-non-runnable placeholder until then so the
+  // visible payload can never reference a model the backend isn't being
+  // asked to run.
   const { data: modelsData, isLoading: modelsLoading } = useModels({
     accessible: true,
     limit: 50,
@@ -235,7 +225,11 @@ export function Onboarding() {
     );
     return chat?.alias;
   }, [modelsData]);
-  const displayModelAlias = runnableModelAlias ?? FALLBACK_DISPLAY_MODEL_ALIAS;
+  // Single alias used for both rendering and outbound requests when
+  // available; otherwise an obviously-non-runnable placeholder for the UI
+  // (and the Run Now button is disabled, see below). This collapse ensures
+  // the visible payload and the outbound payload can never diverge.
+  const displayModelAlias = runnableModelAlias ?? PLACEHOLDER_MODEL_ALIAS;
 
   // Mint a live API key on mount so step 1 has something concrete to show.
   // We only do this once per visit and only when the user is authenticated.
@@ -267,13 +261,12 @@ export function Onboarding() {
       });
   }, [authLoading, isAuthenticated, currentUser, createApiKey]);
 
-  // Fire the "Hello World" sample batch in the background once we know which
-  // model to send it to. We deliberately wait for the catalog query so the
-  // outbound payload uses the same alias the visible code samples render
-  // (otherwise the user sees e.g. `deepseek` in the UI but the backend
-  // receives `medgemma-4b`). If the catalog has no accessible chat model we
-  // skip the background batch and the toast entirely — there's no plausible
-  // model to demo with, and a doomed POST would just spam the console.
+  // Fire the "Hello World" sample batch in the background once we know
+  // which model to send it to. We wait for the catalog query so the
+  // outbound payload uses the same alias the visible code samples render.
+  // If the catalog has no accessible chat model we skip the background
+  // batch and the toast entirely — there's no plausible model to demo
+  // with, and a doomed POST would just spam the console.
   useEffect(() => {
     if (sampleBatchRequestedRef.current) return;
     if (authLoading || !isAuthenticated) return;
@@ -378,21 +371,21 @@ export function Onboarding() {
 
   const handleRunNow = async () => {
     if (runState !== "idle") return;
+    // The button is disabled without a runnable alias; this guard is
+    // defensive in case the disabled prop is bypassed (e.g. via assistive
+    // tech or a stale render). We deliberately don't kick the simulated
+    // success state in that case — silently succeeding without a real
+    // request would re-introduce the visible-vs-actual divergence we just
+    // fixed.
+    const aliasForRequest = runnableModelAlias;
+    if (!aliasForRequest) return;
     setRunState("running");
 
     // Fire the real batch creation in the background. We don't surface its
     // success/failure to the run state machine since the spec asks for a
     // simulated 2.5s "running" → "success" cycle that gives the user a
     // predictable redirect experience, regardless of how fast the API
-    // responds. If we have no catalog-resolved alias we skip the network
-    // call entirely rather than firing against the placeholder display
-    // alias (which the user is unlikely to be entitled to).
-    const aliasForRequest = runnableModelAlias;
-    if (!aliasForRequest) {
-      setTimeout(() => setRunState("success"), RUN_NOW_SIMULATED_DELAY_MS);
-      return;
-    }
-
+    // responds.
     void (async () => {
       try {
         // Always build the JSONL via the object helpers so we never round-
@@ -700,7 +693,12 @@ export function Onboarding() {
                       </div>
                       <Button
                         onClick={handleRunNow}
-                        disabled={runState !== "idle"}
+                        disabled={runState !== "idle" || !runnableModelAlias}
+                        title={
+                          !runnableModelAlias
+                            ? "Loading available models…"
+                            : undefined
+                        }
                         className={`w-full whitespace-nowrap sm:w-auto ${
                           runState === "running"
                             ? "bg-amber-100 text-amber-700 hover:bg-amber-100"
